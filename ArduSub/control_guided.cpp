@@ -133,6 +133,44 @@ void Sub::guided_angle_control_start()
     set_auto_yaw_mode(AUTO_YAW_HOLD);
 }
 
+void Sub::guided_accel_xy_control_start()
+{
+	guided_mode = Guided_Accel_xy;
+
+	// Initialieze pilot-controlled z
+
+    // initialize vertical speeds and leash lengths
+    pos_control->set_speed_z(-g.pilot_velocity_z_max, g.pilot_velocity_z_max);
+    pos_control->set_accel_z(g.pilot_accel_z);
+
+    // initialise altitude target to stopping point
+	pos_control->set_target_to_stopping_point_z();
+
+	pos_control->init_accel_controller_xy();
+
+    set_auto_yaw_mode(AUTO_YAW_HOLD);
+}
+
+void Sub::guided_accel_xyz_control_start()
+{
+	guided_mode = Guided_Accel_xyz;
+
+	// Initialieze pilot-controlled z
+
+    // initialize vertical speeds and leash lengths
+    pos_control->set_speed_z(-g.pilot_velocity_z_max, g.pilot_velocity_z_max);
+    pos_control->set_accel_z(g.pilot_accel_z);
+
+    // initialise altitude target to stopping point
+	pos_control->set_target_to_stopping_point_z();
+
+	pos_control->init_accel_controller_xy();
+	pos_control->init_accel_controller_z();
+
+    set_auto_yaw_mode(AUTO_YAW_HOLD);
+}
+
+
 // guided_set_destination - sets guided mode's target destination
 // Returns true if the fence is enabled and guided waypoint is within the fence
 // else return false if the waypoint is outside the fence
@@ -280,6 +318,17 @@ void Sub::guided_run()
         // run angle controller
         guided_angle_control_run();
         break;
+/*
+    case Guided_Accel_xy:
+    	// Run xy acceleration controller
+    	guided_accel_xy_control_run();
+    	break;
+
+    case Guided_Accel_xyz:
+    	// Run xyz acceleration controller
+    	guided_accel_xyz_control_run();
+    	break;
+*/
     }
 }
 
@@ -508,6 +557,99 @@ void Sub::guided_angle_control_run()
     pos_control.set_alt_target_from_climb_rate_ff(climb_rate_cms, G_Dt, false);
     pos_control.update_z_controller();
 }
+
+// Accel controller
+void Sub::guided_accel_xy_control_run()
+{
+	float target_climb_rate = 0;
+	float target_yaw_rate = 0;
+
+	// process pilot inputs
+	if (!failsafe.radio) {
+
+	    // get pilot's desired yaw rate
+	    target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
+
+		// get pilot desired climb rate
+		target_climb_rate = get_pilot_desired_climb_rate(channel_throttle->get_control_in());
+
+		if (target_yaw_rate != 0) {
+			set_auto_yaw_mode(AUTO_YAW_HOLD);
+		}
+
+	}
+
+
+	// calculate dt
+	float dt = pos_control->time_since_last_xy_update();
+
+	// update at poscontrol update rate
+	// (Yes, the timer is shared between all the pos_control modes)
+	if (dt >= pos_control->get_dt_xy()) {
+		// sanity check dt
+		if (dt >= 0.2f) {
+			dt = 0.0f;
+		}
+
+		// call velocity controller which includes z axis controller
+		pos_control->update_accel_controller_xy(ekfNavVelGainScaler);
+	}
+
+    // set motors to full range
+    motors->set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
+
+
+	// call attitude controller
+	if (auto_yaw_mode == AUTO_YAW_HOLD) {
+		// roll & pitch from waypoint controller, yaw rate from pilot
+		attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), target_yaw_rate, get_smoothing_gain());
+	}else{
+		// roll, pitch from waypoint controller, yaw heading from auto_heading()
+		attitude_control->input_euler_angle_roll_pitch_yaw(pos_control->get_roll(), pos_control->get_pitch(), get_auto_heading(), true, get_smoothing_gain());
+	}
+
+
+    // update altitude target and call position controller
+    pos_control->set_alt_target_from_climb_rate(target_climb_rate, G_Dt, false);
+    pos_control->update_z_controller();
+}
+
+
+
+// Accel controller
+void Sub::guided_accel_xyz_control_run()
+{
+	float target_yaw_rate = 0;
+
+	// calculate dt
+	float dt = pos_control->time_since_last_xy_update();
+
+	// update at poscontrol update rate
+	// (Yes, the timer is shared between all the pos_control modes)
+	if (dt >= pos_control->get_dt_xy()) {
+		// sanity check dt
+		if (dt >= 0.2f) {
+			dt = 0.0f;
+		}
+
+		// call xy accel controller. (default at 50 hz)
+		pos_control->update_accel_controller_xy(ekfNavVelGainScaler);
+	}
+
+    // set motors to full range
+    motors->set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
+
+
+	// Always follow yaw rate.
+    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), target_yaw_rate, get_smoothing_gain());
+
+
+    // Update z-controller always.
+    pos_control->update_accel_controller_z();
+
+}
+
+
 
 // Guided Limit code
 

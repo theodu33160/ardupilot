@@ -105,6 +105,8 @@ enum GuidedMode {
     Guided_Velocity,
     Guided_PosVel,
     Guided_Angle,
+    Guided_Accel_xy,
+    Guided_Accel_xyz,
 };
 
 // Airmode

@@ -15,8 +15,10 @@
 
 static Vector3f guided_pos_target_cm;       // position target (used by posvel controller only)
 static Vector3f guided_vel_target_cms;      // velocity target (used by velocity controller and posvel controller)
+//static Vector3f guided_accel_target_cmss;      // acceleration target (used by acceleration controller and posvelaccel controller)
 static uint32_t posvel_update_time_ms;      // system time of last target update to posvel controller (i.e. position and velocity update)
 static uint32_t vel_update_time_ms;         // system time of last target update to velocity controller
+//static uint32_t accel_update_time_ms;         // system time of last target update to acceleration controller
 
 struct {
     uint32_t update_time_ms;
@@ -78,6 +80,29 @@ void ModeGuided::run()
         // run angle controller
         angle_control_run();
         break;
+
+    case Guided_Accel_xy:
+    	// Run xy acceleration controller
+    	accel_xy_control_run();
+    	break;
+
+    case Guided_Accel_xyz:
+    	// Run xyz acceleration controller
+    	accel_xyz_control_run();
+    	break;
+
+
+/*
+    case Guided_Accel_xy:
+        //run the acceleration xy controller
+        accel_xy_control_run();
+        break;
+
+    case Guided_Accel_xyz:
+        //run the acceleration xy controller
+        accel_xyz_control_run();
+        break;
+        */
     }
  }
 
@@ -193,6 +218,40 @@ void ModeGuided::posvel_control_start()
 
     // pilot always controls yaw
     auto_yaw.set_mode(AUTO_YAW_HOLD);
+}
+
+
+// initialise guided mode's acceleration controller
+void ModeGuided::accel_xy_control_start()
+{
+    // set guided_mode to velocity controller
+    guided_mode = Guided_Accel_xy;
+
+    // initialise horizontal speed, acceleration
+    pos_control->set_max_speed_xy(wp_nav->get_default_speed_xy());
+    pos_control->set_max_accel_xy(wp_nav->get_wp_acceleration());
+
+    // initialise velocity controller
+    pos_control->init_accel_controller_xy();
+}
+
+// initialise guided mode's acceleration controller
+void ModeGuided::accel_xyz_control_start()
+{
+    // set guided_mode to velocity controller
+    guided_mode = Guided_Accel_xyz;
+
+    // initialise horizontal speed, acceleration
+    pos_control->set_max_speed_xy(wp_nav->get_default_speed_xy());
+    pos_control->set_max_accel_xy(wp_nav->get_wp_acceleration());
+
+    // initialize vertical speeds and acceleration
+    pos_control->set_max_speed_z(-get_pilot_speed_dn(), g.pilot_speed_up);
+    pos_control->set_max_accel_z(g.pilot_accel_z);
+
+    // initialise velocity controller
+    pos_control->init_accel_controller_xy();
+    pos_control->init_accel_controller_z();
 }
 
 bool ModeGuided::is_taking_off() const
@@ -356,6 +415,73 @@ bool ModeGuided::set_destination_posvel(const Vector3f& destination, const Vecto
     return true;
 }
 
+// Set accel controller target
+void ModeGuided::guided_set_target_xy_accel(const Vector3f& target_accel)
+{
+	// Check if we are in this mode
+	if (guided_mode != Guided_Accel_xy) {
+		accel_xy_control_start();
+	}
+
+	pos_control->set_accel_target_xy(target_accel);
+}
+
+// Set accel controller target
+void ModeGuided::guided_set_target_xyz_accel(const Vector3f& target_accel)
+{
+	// Check if we are in this mode
+	if (guided_mode != Guided_Accel_xyz) {
+		accel_xyz_control_start();
+	}
+
+	pos_control->set_accel_target_xy(target_accel);
+	pos_control->set_accel_target_z (target_accel);
+}
+
+
+/* 
+// guided_set_acceleration_xy - sets guided mode's target acceleration xy
+void ModeGuided::set_acceleration_xy(const Vector3f& acceleration, bool use_yaw, float yaw_cd, bool use_yaw_rate, float yaw_rate_cds, bool relative_yaw, bool log_request)
+{ //created by theo
+    // check we are in velocity control mode
+    if (guided_mode != Guided_Accel_xy) {
+        accel_xy_control_start();
+    }
+
+    // set yaw state
+    set_yaw_state(use_yaw, yaw_cd, use_yaw_rate, yaw_rate_cds, relative_yaw);
+
+    // record velocity target
+    guided_accel_target_cmss = acceleration;
+    accel_update_time_ms = millis();
+
+    // log target
+    if (log_request) {
+        copter.Log_Write_GuidedTarget(guided_mode, Vector3f(), acceleration);
+    }
+}
+
+// guided_set_acceleration_xyz - sets guided mode's target acceleration xyz
+void ModeGuided::set_acceleration_xyz(const Vector3f& acceleration, bool use_yaw, float yaw_cd, bool use_yaw_rate, float yaw_rate_cds, bool relative_yaw, bool log_request)
+{ //created by theo
+    // check we are in velocity control mode
+    if (guided_mode != Guided_Accel_xyz) {
+        accel_xyz_control_start();
+    }
+
+    // set yaw state
+    set_yaw_state(use_yaw, yaw_cd, use_yaw_rate, yaw_rate_cds, relative_yaw);
+
+    // record velocity target
+    guided_accel_target_cmss = acceleration;
+    accel_update_time_ms = millis();
+
+    // log target
+    if (log_request) {
+        copter.Log_Write_GuidedTarget(guided_mode, Vector3f(), acceleration);
+    }
+}
+*/
 // set guided mode angle target and climbrate
 void ModeGuided::set_angle(const Quaternion &q, float climb_rate_cms_or_thrust, bool use_yaw_rate, float yaw_rate_rads, bool use_thrust)
 {
@@ -574,6 +700,202 @@ void ModeGuided::posvel_control_run()
     }
 }
 
+// guided_accel_xy_control_run - runs the guided accel xy controller
+// called from guided_run
+void ModeGuided::accel_xy_control_run()
+{   //made by theo
+    //from copy of vel_control_run
+    printf("ModeGUided:: accel xy control run\n");
+
+    // process pilot's yaw input
+    float target_yaw_rate = 0;
+    if (!copter.failsafe.radio && use_pilot_yaw()) {
+        // get pilot's desired yaw rate
+        target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
+        if (!is_zero(target_yaw_rate)) {
+            auto_yaw.set_mode(AUTO_YAW_HOLD);
+        }
+    }
+
+    // landed with positive desired climb rate, initiate takeoff
+    if (motors->armed() && copter.ap.auto_armed && copter.ap.land_complete && is_positive(guided_vel_target_cms.z)) {
+        zero_throttle_and_relax_ac();
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+        if (motors->get_spool_state() == AP_Motors::SpoolState::THROTTLE_UNLIMITED) {
+            set_land_complete(false);
+            set_throttle_takeoff();
+        }
+        return;
+    }
+
+    // if not armed set throttle to zero and exit immediately
+    if (is_disarmed_or_landed()) {
+        make_safe_spool_down();
+        return;
+    }
+
+    // set motors to full range
+    motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+    // set velocity to zero and stop rotating if no updates received for 3 seconds
+    uint32_t tnow = millis();
+    if (tnow - vel_update_time_ms > GUIDED_POSVEL_TIMEOUT_MS) {
+        if (!pos_control->get_desired_velocity().is_zero()) {
+            set_desired_velocity_with_accel_and_fence_limits(Vector3f(0.0f, 0.0f, 0.0f));
+        }
+        if (auto_yaw.mode() == AUTO_YAW_RATE) {
+            auto_yaw.set_rate(0.0f);
+        }
+    } else {
+        set_desired_velocity_with_accel_and_fence_limits(guided_vel_target_cms);
+    }
+
+    // call accel controller which does not includes z axis controller
+    pos_control->update_accel_controller_xy();
+
+    // call attitude controller
+    if (auto_yaw.mode() == AUTO_YAW_HOLD) {
+        // roll & pitch from waypoint controller, yaw rate from pilot
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), target_yaw_rate);
+    } else if (auto_yaw.mode() == AUTO_YAW_RATE) {
+        // roll & pitch from velocity controller, yaw rate from mavlink command or mission item
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.rate_cds());
+    } else {
+        // roll, pitch from waypoint controller, yaw heading from GCS or auto_heading()
+        attitude_control->input_euler_angle_roll_pitch_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.yaw(), true);
+    }
+}
+
+// guided_accel_xyz_control_run - runs the guided accel xyz controller
+// called from guided_run
+void ModeGuided::accel_xyz_control_run()
+{   //made by theo
+    //from copy of vel_control_run
+    printf("ModeGUided:: accel xyz control run\n");
+    // process pilot's yaw input
+    float target_yaw_rate = 0;
+    if (!copter.failsafe.radio && use_pilot_yaw()) {
+        // get pilot's desired yaw rate
+        target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
+        if (!is_zero(target_yaw_rate)) {
+            auto_yaw.set_mode(AUTO_YAW_HOLD);
+        }
+    }
+
+    // landed with positive desired climb rate, initiate takeoff
+    if (motors->armed() && copter.ap.auto_armed && copter.ap.land_complete && is_positive(guided_vel_target_cms.z)) {
+        zero_throttle_and_relax_ac();
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+        if (motors->get_spool_state() == AP_Motors::SpoolState::THROTTLE_UNLIMITED) {
+            set_land_complete(false);
+            set_throttle_takeoff();
+        }
+        return;
+    }
+
+    // if not armed set throttle to zero and exit immediately
+    if (is_disarmed_or_landed()) {
+        make_safe_spool_down();
+        return;
+    }
+
+    // set motors to full range
+    motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+    // set velocity to zero and stop rotating if no updates received for 3 seconds
+    uint32_t tnow = millis();
+    if (tnow - vel_update_time_ms > GUIDED_POSVEL_TIMEOUT_MS) {
+        if (!pos_control->get_desired_velocity().is_zero()) {
+            set_desired_velocity_with_accel_and_fence_limits(Vector3f(0.0f, 0.0f, 0.0f));
+        }
+        if (auto_yaw.mode() == AUTO_YAW_RATE) {
+            auto_yaw.set_rate(0.0f);
+        }
+    } else {
+        set_desired_velocity_with_accel_and_fence_limits(guided_vel_target_cms);
+    }
+
+    // call accel controller which does not includes z axis controller
+    pos_control->update_accel_controller_xy();
+    pos_control->update_accel_controller_z();
+
+    // call attitude controller
+    if (auto_yaw.mode() == AUTO_YAW_HOLD) {
+        // roll & pitch from waypoint controller, yaw rate from pilot
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), target_yaw_rate);
+    } else if (auto_yaw.mode() == AUTO_YAW_RATE) {
+        // roll & pitch from velocity controller, yaw rate from mavlink command or mission item
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.rate_cds());
+    } else {
+        // roll, pitch from waypoint controller, yaw heading from GCS or auto_heading()
+        attitude_control->input_euler_angle_roll_pitch_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.yaw(), true);
+    }
+}
+
+/*
+void ModeGuided::accel_xy_control_run()
+{   //made by theo: from copy of vel_control_run
+    // process pilot's yaw input
+    float target_yaw_rate = 0;
+    if (!copter.failsafe.radio && use_pilot_yaw()) {
+        // get pilot's desired yaw rate
+        target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
+        if (!is_zero(target_yaw_rate)) {
+            auto_yaw.set_mode(AUTO_YAW_HOLD);
+        }
+    }
+
+    // landed with positive desired climb rate, initiate takeoff
+    if (motors->armed() && copter.ap.auto_armed && copter.ap.land_complete && is_positive(guided_vel_target_cms.z)) {
+        zero_throttle_and_relax_ac();
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+        if (motors->get_spool_state() == AP_Motors::SpoolState::THROTTLE_UNLIMITED) {
+            set_land_complete(false);
+            set_throttle_takeoff();
+        }
+        return;
+    }
+
+    // if not armed set throttle to zero and exit immediately
+    if (is_disarmed_or_landed()) {
+        make_safe_spool_down();
+        return;
+    }
+
+    // set motors to full range
+    motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+    // set velocity to zero and stop rotating if no updates received for 3 seconds
+    uint32_t tnow = millis();
+    if (tnow - vel_update_time_ms > GUIDED_POSVEL_TIMEOUT_MS) {
+        if (!pos_control->get_desired_velocity().is_zero()) {
+            set_desired_velocity_with_accel_and_fence_limits(Vector3f(0.0f, 0.0f, 0.0f));
+        }
+        if (auto_yaw.mode() == AUTO_YAW_RATE) {
+            auto_yaw.set_rate(0.0f);
+        }
+    } else {
+        set_desired_velocity_with_accel_and_fence_limits(guided_vel_target_cms);
+        set_acceleration_xy()
+        
+    }
+
+    // call velocity controller which includes z axis controller
+    pos_control->update_accel_controller_xy();
+
+    // call attitude controller
+    if (auto_yaw.mode() == AUTO_YAW_HOLD) {
+        // roll & pitch from waypoint controller, yaw rate from pilot
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), target_yaw_rate);
+    } else if (auto_yaw.mode() == AUTO_YAW_RATE) {
+        // roll & pitch from velocity controller, yaw rate from mavlink command or mission item
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.rate_cds());
+    } else {
+        // roll, pitch from waypoint controller, yaw heading from GCS or auto_heading()
+        attitude_control->input_euler_angle_roll_pitch_yaw(pos_control->get_roll(), pos_control->get_pitch(), auto_yaw.yaw(), true);
+    }
+}
+*/
 // guided_angle_control_run - runs the guided angle controller
 // called from guided_run
 void ModeGuided::angle_control_run()

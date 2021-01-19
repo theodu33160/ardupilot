@@ -953,6 +953,85 @@ void AC_PosControl::update_vel_controller_xyz()
     update_z_controller();
 }
 
+void AC_PosControl::init_accel_controller_xy()
+{
+	// NB: NOw, raw copy of init_vel_controller_xyz
+
+
+	// set roll, pitch lean angle targets to current attitude
+	_roll_target = _ahrs.roll_sensor;
+	_pitch_target = _ahrs.pitch_sensor;
+
+	// reset last velocity if this controller has just been engaged or dt is zero
+	lean_angles_to_accel(_accel_target.x, _accel_target.y);
+	_pid_vel_xy.set_integrator(_accel_target);
+
+	// flag reset required in rate to accel step
+	_flags.reset_desired_vel_to_pos = true;
+	_flags.reset_accel_to_lean_xy = true;
+
+
+	// should not be nescesary
+	// move current vehicle velocity into feed forward velocity
+	const Vector3f& curr_vel = _inav.get_velocity();
+	set_desired_velocity_xy(curr_vel.x, curr_vel.y);
+}
+
+void AC_PosControl::update_accel_controller_xy()
+{
+	// Based on xyz vel controller
+    //todo, check that everything is done, including filtering
+
+	// compute dt
+    const uint64_t now_us = AP_HAL::micros64();
+    float dt = (now_us - _last_update_xy_us) * 1.0e-6f;
+
+    // sanity check dt
+    if (dt >= POSCONTROL_ACTIVE_TIMEOUT_US * 1.0e-6f) {
+        dt = 0.0f;
+    }
+
+
+	// scale desired acceleration if it's beyond acceptable limit
+	// To-Do: move this check down to the accel_to_lean_angle method?
+	float accel_total = norm(_accel_target.x, _accel_target.y);
+	if (accel_total > POSCONTROL_ACCEL_XY_MAX && accel_total > 0.0f) {
+		_accel_target.x = POSCONTROL_ACCEL_XY_MAX * _accel_target.x/accel_total;
+		_accel_target.y = POSCONTROL_ACCEL_XY_MAX * _accel_target.y/accel_total;
+		_limit.accel_xy = true;     // unused
+	} else {
+		// reset accel limit flag
+		_limit.accel_xy = false;
+	}
+
+	// run acceleration to lean angle step
+	accel_to_lean_angles(_accel_target.x, _accel_target.y, _roll_target, _pitch_target);
+
+	// record update time
+	_last_update_xy_us = now_us;
+}
+
+void AC_PosControl::init_accel_controller_z()
+{
+	// z-controller is initialized by reseting the d-filter for throttle
+	// At least, that's the only thing I could find..
+	_flags.reset_rate_to_accel_z = true;
+}
+
+void AC_PosControl::update_accel_controller_z()
+{
+    // check time since last cast
+    const uint64_t now_us = AP_HAL::micros64();
+    if (now_us - _last_update_xy_us > POSCONTROL_ACTIVE_TIMEOUT_US) {
+        _flags.reset_rate_to_accel_z = true;
+    }
+    _last_update_z_us = now_us;
+
+
+    // set target for accel based throttle controller
+    run_z_controller();
+}
+
 float AC_PosControl::get_horizontal_error() const
 {
     return norm(_pos_error.x, _pos_error.y);
